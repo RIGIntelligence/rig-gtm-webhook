@@ -1,18 +1,16 @@
-"""Webhook receiver for Resend events — runs on Railway with uvicorn."""
+"""Vercel serverless webhook — Flask app format."""
 import json
-import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
 
 DATA_DIR = Path("/tmp/gtm_data")
 DATA_DIR.mkdir(exist_ok=True)
 CRM_DB = DATA_DIR / "gtm_state.db"
-
-app = FastAPI(title="RIG GTM Webhook")
 
 
 def init_cdb():
@@ -31,7 +29,7 @@ def init_cdb():
     conn.close()
 
 
-def process(payload: dict) -> dict:
+def process(payload):
     rtype = payload.get("type", "")
     if rtype in ("email.bounced", "email.complained"):
         return {"status": "negative", "type": rtype}
@@ -56,12 +54,12 @@ def process(payload: dict) -> dict:
     return {"status": "ignored", "type": rtype}
 
 
-@app.post("/webhooks/resend")
-async def webhook(request: Request):
-    payload = await request.json()
-    return JSONResponse(process(payload))
+@app.route("/api/webhook", methods=["POST"])
+def webhook():
+    payload = request.get_json(force=True)
+    return jsonify(process(payload)), 200
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+@app.route("/api/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"}), 200
