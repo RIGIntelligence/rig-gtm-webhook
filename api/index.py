@@ -1,20 +1,20 @@
-"""Vercel serverless webhook — Flask app format."""
+"""Vercel Python serverless function — uses standard library only."""
 import json
 import sqlite3
+import os
 from datetime import datetime, timezone
-from pathlib import Path
+from http.server import BaseHTTPRequestHandler
+from io import BytesIO
 
-from flask import Flask, request, jsonify
 
-app = Flask(__name__)
-
-DATA_DIR = Path("/tmp/gtm_data")
-DATA_DIR.mkdir(exist_ok=True)
-CRM_DB = DATA_DIR / "gtm_state.db"
+# ── DB setup ────────────────────────────────────────────────────────────
+DATA_DIR = "/tmp/gtm_data"
+os.makedirs(DATA_DIR, exist_ok=True)
+CRM_DB = os.path.join(DATA_DIR, "gtm_state.db")
 
 
 def init_cdb():
-    conn = sqlite3.connect(str(CRM_DB))
+    conn = sqlite3.connect(CRM_DB)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS suppression_list (
             email TEXT PRIMARY KEY, reason TEXT NOT NULL,
@@ -42,7 +42,7 @@ def process(payload):
         text = body.lower()
         init_cdb()
         if any(kw in text for kw in ["stop", "unsubscribe", "not interested", "remove me"]):
-            conn = sqlite3.connect(str(CRM_DB))
+            conn = sqlite3.connect(CRM_DB)
             conn.execute("INSERT OR IGNORE INTO suppression_list VALUES (?,?,?,?)",
                          (sender, "auto_stop", datetime.now(timezone.utc).isoformat(), "webhook"))
             conn.commit(); conn.close()
@@ -54,12 +54,38 @@ def process(payload):
     return {"status": "ignored", "type": rtype}
 
 
-@app.route("/api/webhook", methods=["POST"])
-def webhook():
-    payload = request.get_json(force=True)
-    return jsonify(process(payload)), 200
+class handler(BaseHTTPRequestHandler):
+    """Vercel Python runtime handler."""
 
+    def do_GET(self):
+        if self.path == "/api/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "ok"}).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
 
-@app.route("/api/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"}), 200
+    def do_POST(self):
+        if self.path == "/api/webhook":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                payload = json.loads(body)
+                result = process(payload)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(result).encode())
+            except Exception as e:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass  # Suppress default logging
